@@ -15,6 +15,7 @@ full clip (CLIP_PUBLIC_BASE_URL) or names its local path.
 import json
 import logging
 import os
+import re
 import time
 from pathlib import Path
 
@@ -32,12 +33,53 @@ class DiscordError(RuntimeError):
     pass
 
 
+WEBHOOK_RE = re.compile(r"^https://(?:(?:ptb|canary)\.)?discord(?:app)?\.com/api(?:/v\d+)?/webhooks/\d+/[\w-]+/?$")
+
+
 def webhook_url():
-    return os.getenv("DISCORD_WEBHOOK_URL", "").strip()
+    return os.getenv("DISCORD_WEBHOOK_URL", "").strip().strip('"').strip("'")
+
+
+def url_problem(url=None):
+    """Why DISCORD_WEBHOOK_URL can't work, or None. Never includes the URL itself."""
+    url = webhook_url() if url is None else url
+    if not url:
+        return "DISCORD_WEBHOOK_URL is not set in clipping_engine/.env (restart after editing .env)"
+    if "/channels/" in url:
+        return ("DISCORD_WEBHOOK_URL is a channel link, not a webhook. In Discord: channel settings -> "
+                "Integrations -> Webhooks -> New Webhook -> Copy Webhook URL")
+    if not WEBHOOK_RE.match(url) and not url.startswith("http://127.0.0.1"):
+        return ("DISCORD_WEBHOOK_URL doesn't look like a webhook URL "
+                "(expected https://discord.com/api/webhooks/<number>/<token>)")
+    return None
 
 
 def enabled():
-    return config.DISCORD_NOTIFICATIONS and bool(webhook_url())
+    return config.DISCORD_NOTIFICATIONS and url_problem() is None
+
+
+def status():
+    """Short reason clips are not being posted, or None when Discord is set up."""
+    if not config.DISCORD_NOTIFICATIONS:
+        return "DISCORD_NOTIFICATIONS is False in config.py"
+    return url_problem()
+
+
+def send_test(session=None):
+    """Post a short test message. Returns (ok, explanation)."""
+    problem = status()
+    if problem:
+        return False, problem
+    payload = {"allowed_mentions": {"parse": []},
+               "content": "✅ Clipper test message: this channel will receive clips."}
+    try:
+        result = _post(webhook_url(), payload, None, session, attempts=2)
+    except DiscordError as exc:
+        text = str(exc)
+        if "401" in text or "404" in text:
+            return False, f"{text}: the webhook was deleted or the URL is incomplete; create a new one and paste it again"
+        return False, text
+    return result == "ok", "test message sent" if result == "ok" else f"unexpected response ({result})"
 
 
 def build_payload(clip, link=None, attachment_note=None):
