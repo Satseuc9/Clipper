@@ -1,0 +1,7 @@
+model_cache/
+recordings/
+clips/
+logs/
+.tokens/
+.env
+__pycache__/

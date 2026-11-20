@@ -182,8 +182,8 @@ class YouTubeMonitor(PlatformMonitor):
         """Return {video_id: {"title", "viewers"}} for videos that are live right now."""
         todo = [v for v in dict.fromkeys(video_ids) if v not in self._done_videos]
         live = {}
-        fields = ("items(id,snippet(title,liveBroadcastContent),"
-                  "liveStreamingDetails(actualStartTime,actualEndTime,concurrentViewers))")
+        fields = ("items(id,snippet(title,liveBroadcastContent),liveStreamingDetails("
+                  "actualStartTime,actualEndTime,concurrentViewers,activeLiveChatId))")
         for i in range(0, len(todo), BATCH_SIZE):
             batch = todo[i:i + BATCH_SIZE]
             data = self._call("videos", {"part": "snippet,liveStreamingDetails",
@@ -200,6 +200,8 @@ class YouTubeMonitor(PlatformMonitor):
                     live[vid] = {
                         "title": item["snippet"].get("title"),
                         "viewers": int(viewers) if str(viewers).isdigit() else None,
+                        "started_at": details.get("actualStartTime"),
+                        "live_chat_id": details.get("activeLiveChatId"),
                     }
                 elif state not in ("live", "upcoming") and (not details or details.get("actualEndTime")):
                     self._done_videos.add(vid)   # normal upload or finished broadcast
@@ -235,10 +237,13 @@ class YouTubeMonitor(PlatformMonitor):
                     self.key, name, LIVE, display_name=channel["title"],
                     viewers=info["viewers"], title=info["title"],
                     url=f"https://www.youtube.com/watch?v={vid}", checked_at=checked_at,
+                    extra={"channel_id": channel["id"], "video_id": vid,
+                           "live_chat_id": info["live_chat_id"], "started_at": info["started_at"]},
                 ))
             else:
                 results.append(StreamResult(
                     self.key, name, OFFLINE, display_name=channel["title"],
                     url=f"https://www.youtube.com/channel/{channel['id']}", checked_at=checked_at,
+                    extra={"channel_id": channel["id"]},
                 ))
         return results

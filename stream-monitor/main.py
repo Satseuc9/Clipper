@@ -94,17 +94,36 @@ def config_warnings(monitors):
             for key in config.STREAMERS if key not in known]
 
 
-def main():
-    args = parse_args()
-    interval = max(MIN_INTERVAL, args.interval or config.CHECK_INTERVAL_SECONDS)
+def _call_hook(on_cycle, sections, changes):
+    """Run the optional per-cycle hook; a failing hook never stops monitoring."""
+    if on_cycle is None:
+        return []
+    try:
+        return list(on_cycle(sections, changes) or [])
+    except Exception as exc:
+        return [f"WARNING: cycle hook failed ({type(exc).__name__}: {exc})"]
+
+
+def run_monitor(interval, once=False, on_cycle=None):
+    """
+    Run the monitoring loop (or a single check with once=True).
+
+    on_cycle(sections, changes) is called after every cycle with the rows
+    that were just displayed (sections = [(title, note, rows)]) and the
+    status changes of that cycle. It may return extra lines to print.
+    This is how other tools (e.g. the clipping engine) reuse the monitor.
+    """
+    interval = max(MIN_INTERVAL, int(interval))
     monitors = build_monitors()
     tracker = StatusTracker(config.KEEP_LAST_STATUS_SECONDS)
     warnings = config_warnings(monitors)
 
     try:
-        if args.once:
-            sections, _ = run_cycle(monitors, tracker, interval)
+        if once:
+            sections, changes = run_cycle(monitors, tracker, interval)
             terminal.print_report(sections, [], 0, warnings)
+            for line in _call_hook(on_cycle, sections, changes):
+                print(line)
             return 0
 
         print("Checking streamers...", flush=True)
@@ -117,6 +136,8 @@ def main():
             totals = terminal.print_report(sections, earlier, config.RECENT_CHANGES_TO_SHOW, warnings)
             for change in changes:
                 terminal.print_change(change)
+            for line in _call_hook(on_cycle, sections, changes):
+                print(line)
 
             wait = max(1, round(interval - (time.monotonic() - started)))
             terminal.print_cycle_footer(totals, wait)
@@ -124,6 +145,11 @@ def main():
     except KeyboardInterrupt:
         print("\nMonitoring stopped.")
         return 0
+
+
+def main():
+    args = parse_args()
+    return run_monitor(args.interval or config.CHECK_INTERVAL_SECONDS, once=args.once)
 
 
 if __name__ == "__main__":

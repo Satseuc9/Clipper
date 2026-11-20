@@ -1,0 +1,19 @@
+# The engine runs the existing stream-monitor (requests, python-dotenv, colorama).
+-r ../stream-monitor/requirements.txt
+
+# Capture (also needs the FFmpeg program installed - see README)
+streamlink>=8.0
+
+# Analysis
+numpy>=1.26
+ai-edge-litert>=1.4              # runs the YAMNet sound classifier (no TensorFlow needed)
+faster-whisper>=1.1              # speech-to-text with word timestamps
+opencv-python-headless>=4.9      # face detection (YuNet) for vertical cropping
+anthropic>=2.11                  # Claude: AI entertainment evaluation (optional at runtime)
+
+# Chat
+websockets>=14                   # Twitch EventSub WebSocket
+cryptography>=42                 # Kick webhook signature verification
+
+# Tests
+pytest>=8

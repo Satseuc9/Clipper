@@ -225,6 +225,15 @@ Tools that do report TikTok LIVE status, such as the `TikTokLive` library and pa
 | `HTTP 403: ... YouTube Data API v3 has not been used / is disabled` | Enable the API in your Google Cloud project. |
 | `YouTube daily quota exhausted` | Wait until midnight Pacific Time, or reduce the number of channels. |
 
+## Using the monitor from other tools
+
+`main.run_monitor(interval, once=False, on_cycle=None)` runs the same loop as the command line. `on_cycle(sections, changes)` is called after every cycle with the rows that were just displayed, and any lines it returns are printed under the report. Each row (`StreamResult`) also carries platform IDs in `extra`:
+- Twitch: `user_id`, `started_at`
+- Kick: `broadcaster_user_id`, `started_at`
+- YouTube: `channel_id`, `video_id`, `live_chat_id`, `started_at`
+
+The [clipping engine](../clipping_engine/README.md) uses this hook to start and stop recordings, so the monitor stays the only place where streamers are listed and live status is decided.
+
 ## Project structure
 
 ```
