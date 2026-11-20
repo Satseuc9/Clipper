@@ -176,9 +176,7 @@ class Pipeline:
                 continue
             storage.update_json(path, status="done", finished=time.time(), error=None, result=result)
             self.clips_sent += result.get("sent", 0)
-            best = result.get("best_score")
-            self._event(f"{label}: {result.get('candidates', 0)} moments, best "
-                        f"{best if best is not None else '-'}, {len(result.get('clips', []))} clip(s)")
+            self._event(f"{label}: {describe(result)}")
 
     def _retry(self, path, side, error, label):
         attempts = side.get("attempts", 1)
@@ -195,11 +193,43 @@ class Pipeline:
     def _event(self, text):
         self.events.append(f"[{time.strftime('%H:%M:%S')}] {text}")
 
+    def backlog(self):
+        """(segments waiting, GB waiting) across all sessions."""
+        count, size = 0, 0
+        for session in storage.list_sessions():
+            if session in self._finished_sessions:
+                continue
+            for side in storage.session_segments(session):
+                if side.get("status") in ("queued", "processing"):
+                    count += 1
+                    size += side.get("size", 0)
+        return count, size / 1024 ** 3
+
     def status_lines(self):
-        queued = sum(1 for _ in self._pending())
-        lines = [f"  ⚙ analysis: {len(self.inflight)} running, {queued} ready, {self.clips_sent} clip(s) sent"]
+        waiting, gb = self.backlog()
+        lines = [f"  ⚙ analysis: {len(self.inflight)} running, {waiting} waiting ({gb:.1f} GB), "
+                 f"{self.clips_sent} clip(s) sent"]
+        if waiting > max(3, 2 * self.workers):
+            lines.append(f"  ⚠ analysis is falling behind ({self.workers} worker(s)): raise ANALYSIS_WORKERS, "
+                         f"record fewer streamers or use a lower STREAM_QUALITY")
         lines += [f"    {e}" for e in self.events]
         return lines
+
+
+def describe(result):
+    """One-line summary of a processed segment, including which signals it had."""
+    best = result.get("best_score")
+    text = f"{result.get('candidates', 0)} moments, best {best if best is not None else '-'}, " \
+           f"{len(result.get('clips', []))} clip(s)"
+    signals = result.get("signals") or {}
+    have = [k for k in ("audio", "chat", "video") if signals.get(k)]
+    have += [k for k in ("speech", "ai") if result.get(k)]
+    missing = [k for k in ("chat", "speech", "ai") if k not in have]
+    text += f" [{'+'.join(have) or 'no signals'}" + (f"; no {', no '.join(missing)}" if missing else "") + "]"
+    problems = [n for n in result.get("notes") or [] if "unavailable" in n or "failed" in n]
+    if problems:
+        text += f" ⚠ {problems[0][:90]}"
+    return text
 
 
 class _InlineFuture:

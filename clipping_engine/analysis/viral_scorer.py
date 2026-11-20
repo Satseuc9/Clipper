@@ -69,7 +69,10 @@ def find_candidates(curve, own_start, own_end, max_candidates=None, gap=None):
     gap = gap or config.DEDUPE_GAP_SECONDS
     med = float(np.median(curve))
     mad = float(np.median(np.abs(curve - med))) * 1.4826
-    threshold = max(0.2, med + 3 * mad)
+    # Relative to this segment's own baseline: real streams (game audio, music,
+    # speech mixed together) rarely reach high absolute values, and Stage 1 only
+    # has to pick which moments get scored, not decide what is clip-worthy.
+    threshold = max(config.STAGE1_MIN_INTEREST, med + 2 * mad)
     order = np.argsort(-curve)
     picked = []
     for t in order:

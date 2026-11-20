@@ -123,6 +123,10 @@ class ChatManager:
         for (platform, name), (_, chat_log, collector) in self.sessions.items():
             state = getattr(collector, "status", "")
             lines.append(f"  💬 {platform}/{name}: {chat_log.messages} chat messages ({state})")
+        by_reason = {}
         for (platform, name), reason in self.notes.items():
-            lines.append(f"  💬 {platform}/{name}: no chat - {reason}")
+            by_reason.setdefault(reason, []).append(name)
+        for reason, names in by_reason.items():
+            who = names[0] if len(names) == 1 else f"{len(names)} streams ({', '.join(names[:4])}{'...' if len(names) > 4 else ''})"
+            lines.append(f"  💬 no chat for {who}: {reason}")
         return lines

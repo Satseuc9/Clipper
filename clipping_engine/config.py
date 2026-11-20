@@ -36,8 +36,11 @@ FFMPEG_PATH = "ffmpeg"
 FFPROBE_PATH = "ffprobe"
 STREAMLINK_EXTRA_ARGS = []        # e.g. ["--twitch-low-latency"]
 STREAM_TIMEOUT_SECONDS = 60       # streamlink gives up after this long without data
-STALL_RESTART_SECONDS = 90        # restart if the current segment stops growing
+STALL_RESTART_SECONDS = 90        # restart if the current segment stops growing (ad breaks excluded)
+MAX_AD_BREAK_SECONDS = 600        # a Twitch ad pause longer than this is treated as a stall
 RECONNECT_DELAYS_SECONDS = [5, 15, 30, 60, 120]   # back-off between reconnects
+RECORDING_GIVE_UP_MINUTES = 15    # stop reconnecting after this long without receiving any data...
+RECORDING_RETRY_COOLDOWN_MINUTES = 10   # ...and wait this long before trying that streamer again
 
 # ---- Storage limits -------------------------------------------------------------
 
@@ -45,6 +48,7 @@ MAX_RECORDINGS_GB = 100           # processed recordings are deleted oldest-firs
 RECORDING_RETENTION_HOURS = 48    # fully processed sessions older than this are deleted
 MAX_CLIPS_GB = 50                 # finished clips are deleted oldest-first above this
 KEEP_UNPROCESSED_RECORDINGS = True  # never delete segments that are not processed yet
+MIN_FREE_DISK_GB = 20             # no new recordings below this; running ones stop below half of it
 
 # HTTP timeout for chat, Discord and other API requests made by the engine.
 REQUEST_TIMEOUT_SECONDS = 15
@@ -80,8 +84,10 @@ ANALYSIS_CONTEXT_SECONDS = 60
 # next segment's analysis (which has the footage after them).
 SEGMENT_TAIL_GUARD_SECONDS = 25
 
-# Stage 1 keeps at most this many candidate moments per segment.
+# Stage 1 keeps at most this many candidate moments per segment: the segment's
+# strongest peaks relative to its own baseline, so every segment gets scored.
 MAX_CANDIDATES_PER_SEGMENT = 8
+STAGE1_MIN_INTEREST = 0.05        # ignore peaks below this (near-silence)
 # Stage 2 (transcription, frames) runs on candidates whose pre-score reaches this.
 STAGE2_MIN_PRESCORE = 25
 # Stage 3 (Claude) evaluates at most this many candidates per segment...
@@ -152,6 +158,9 @@ CLIP_PUBLIC_BASE_URL = None
 
 # ---- Processing -------------------------------------------------------------------------------
 
-ANALYSIS_WORKERS = 1              # separate processes; recording is never blocked by analysis
+# Worker processes for analysis; recording is never blocked by analysis. Each
+# live streamer produces one segment per RECORDING_SEGMENT_MINUTES; if the status
+# line says analysis is falling behind, raise this (CPU cores / 3 is a good start).
+ANALYSIS_WORKERS = 2
 PROCESSING_MAX_ATTEMPTS = 3
 PROCESSING_RETRY_DELAY_SECONDS = 60

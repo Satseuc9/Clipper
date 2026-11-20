@@ -100,3 +100,20 @@ def coverage_fraction(intervals, start, end):
         return 0.0
     covered = sum(max(0.0, min(end, b) - max(start, a)) for a, b in intervals)
     return min(1.0, covered / (end - start))
+
+
+def unavailable_reason(session_dir):
+    """The most recent reason chat collection gave for not working, if any."""
+    path = Path(session_dir) / "chat.jsonl"
+    reason = None
+    if path.exists():
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                if '"coverage"' not in line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                reason = None if rec.get("available") else rec.get("reason")
+    return reason

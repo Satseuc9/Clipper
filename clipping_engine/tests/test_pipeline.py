@@ -273,3 +273,25 @@ def test_mock_mode_end_to_end(engine, discord, tmp_path, monkeypatch):
     info = json.loads(clip.with_suffix(".json").read_text())
     assert clip.exists() and info["layout"] == "fit_blur" and 30 <= info["duration"] <= 90
     assert len(discord.requests) == 1 and discord.requests[0]["files"]["files[0]"][0] == clip.name
+
+
+@needs_streamlink
+@needs_ffmpeg
+def test_streamer_removed_from_monitor_config_stops_recording(engine, live_hls):
+    rec = RecordingManager()
+    pipeline = Pipeline(process_fn=lambda *a: {}, use_processes=False)
+    hook = make_hook(rec, None, pipeline, is_stale)
+    hook([("TWITCH", "", [row("twitch", "hasanabi", LIVE, live_hls.url)])], [])
+    recorder = rec.recorders[("twitch", "hasanabi")]
+    assert wait_for(lambda: recorder.segments >= 1, 30)
+    hook([("TWITCH", "", [row("twitch", "someone_else", OFFLINE)])], [])      # hasanabi no longer listed
+    recorder.join(40)
+    assert not recorder.is_alive()
+
+
+def test_status_line_explains_empty_results():
+    from clipping_engine.pipeline import describe
+    text = describe({"candidates": 0, "best_score": None, "clips": [], "signals": {"audio": True, "video": True,
+                     "chat": False}, "notes": ["audio classifier unavailable: ImportError: no module"]})
+    assert "audio+video" in text and "no chat" in text and "no speech" in text and "no ai" in text
+    assert "audio classifier unavailable" in text

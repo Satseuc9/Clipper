@@ -296,3 +296,15 @@ def test_ai_evaluator_failures_are_missing_signals(monkeypatch):
     monkeypatch.setattr(ai_evaluator, "_client", fake_client(FakeMessages(error=err)))
     with pytest.raises(ai_evaluator.AIUnavailable, match="reach"):
         ai_evaluator.evaluate(CANDIDATE, [])
+
+
+def test_stage1_finds_peaks_in_quiet_real_world_curves():
+    """Real streams rarely reach high absolute interest; the segment's own peaks must still be scored."""
+    rng = np.random.default_rng(2)
+    curve = 0.03 + 0.01 * rng.random(600)
+    curve[200:204] = [0.08, 0.14, 0.12, 0.07]          # modest bump, far below the old 0.2 floor
+    curve[450] = 0.11
+    peaks = sorted(int(c["peak"]) for c in viral_scorer.find_candidates(curve, 0, 600))
+    assert 201 in peaks and 450 in peaks
+    flat = np.full(600, 0.02)
+    assert viral_scorer.find_candidates(flat, 0, 600) == [], "near-silence gives nothing"

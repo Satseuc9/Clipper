@@ -35,7 +35,8 @@ FINISHED = {"done", "failed", "skipped"}
 def safe_name(name):
     """Folder-safe version of a streamer name / channel ID / @handle."""
     cleaned = re.sub(r"[^A-Za-z0-9_.@-]+", "_", str(name).strip())
-    return cleaned.strip("._") or "unnamed"
+    cleaned = cleaned.strip(".")          # no "." / ".." folders; underscores are kept (caseoh_ != caseoh)
+    return cleaned or "unnamed"
 
 
 def read_json(path, default=None):

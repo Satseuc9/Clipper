@@ -55,6 +55,9 @@ def targets_from_rows(sections, is_stale):
 def make_hook(recorder, chat_manager, pipeline, is_stale):
     def on_cycle(sections, changes):
         to_start, to_stop = targets_from_rows(sections, is_stale)
+        monitored = {(row.platform, row.name.lower()) for _, _, rows in sections for row in rows
+                     if selected(row.platform, row.name)}
+        recorder.stop_unmonitored(monitored)            # removed from stream-monitor/config.py
         for platform, name in to_stop:
             recorder.stop_recording(platform, name)
         for target in to_start:

@@ -18,12 +18,13 @@ stream-monitor says LIVE ──► Streamlink ─► FFmpeg ─► 10-minute seg
 
 ## What was tested, and how
 
-Every component is covered by `clipping_engine/tests` (56 tests). Platforms that can't be reached from a test machine are replaced by local servers that speak the documented formats.
+Every component is covered by `clipping_engine/tests` (64 tests). Platforms that can't be reached from a test machine are replaced by local servers that speak the documented formats.
 
 | Component | Tested with |
 |---|---|
 | Streamlink plugin check (Twitch, Kick, YouTube) | the real Streamlink 8.6.3 `--can-handle-url` |
 | Recording, 10-minute segments, start/stop, no duplicates, multiple streamers, concurrency limit, reconnect after a dropped connection, crash recovery, storage cleanup | real Streamlink + FFmpeg recording a live HLS stream that FFmpeg generates and a local web server serves |
+| Twitch ad breaks don't trigger reconnects; real stalls still do; giving up on dead streams; low-disk guard; removed streamers stop recording | a fake `streamlink` that pauses output and logs exactly like Streamlink's ad filter |
 | Timestamp sync (wall clock ↔ video), including the start-up burst and ad-break gaps | real captures + time-map unit tests |
 | Twitch chat (EventSub WebSocket, subscriptions, `session_reconnect`, duplicate messages, device-code login, token refresh) | local mock WebSocket + Helix endpoints |
 | YouTube chat (`liveChatMessages.list` paging, chat ended, chat disabled, quota budget) | mocked API responses in the documented format |
@@ -38,7 +39,9 @@ Every component is covered by `clipping_engine/tests` (56 tests). Platforms that
 | Processing queue (ordering, retries, permanent failure, crashed worker process) | real worker processes |
 | Everything together | mock mode on a prerecorded video with chat → scored moment → clip → Discord |
 
-**Not run against the real services yet:** live Twitch, Kick and YouTube streams and chat, a real Discord channel, and real Claude calls. The machine this was built on had no network access to those hosts and no credentials. Speech-to-text was not run with real Whisper weights either (HuggingFace was unreachable there). The faster-whisper API it uses was checked against the installed package. Run `python -m clipping_engine check`, then a short live test, before relying on it.
+**First live run (Twitch, 7 streams at once):** recording and segmenting worked; it exposed ad-break reconnect loops, a candidate threshold that was too strict for real stream audio, an analysis backlog and recordings that never stopped. All four are fixed and covered by tests.
+
+**Not run against the real services yet:** Twitch/Kick/YouTube chat, Kick and YouTube capture, a real Discord channel, and real Claude calls. The machine this was built on had no network access to those hosts and no credentials. Speech-to-text was not run with real Whisper weights either (HuggingFace was unreachable there). The faster-whisper API it uses was checked against the installed package. Run `python -m clipping_engine check`, then a short live test, before relying on it.
 
 ---
 
@@ -135,10 +138,12 @@ The video is split exactly like a live recording and runs through the full pipel
   ```
 
   FFmpeg copies the audio and video packets without re-encoding, so A/V sync is untouched. Each segment is a standalone MPEG-TS file with its own timestamps.
-- The recorder stops on **OFFLINE**. **UNKNOWN** never stops a recording.
+- The recorder stops on **OFFLINE**, or when the streamer is removed from `stream-monitor/config.py`. **UNKNOWN** never stops a recording.
 - There is one recorder per streamer, up to `MAX_CONCURRENT_RECORDINGS`, each in its own threads and child processes.
 - Before the first capture, the engine runs `streamlink --can-handle-url` to check that the installed Streamlink has a plugin for each platform. `check` shows the result.
-- **Reconnects:** if the stream drops, stalls (no data for `STALL_RESTART_SECONDS`) or Streamlink exits while the monitor still says LIVE, the recorder reconnects with back-off. Segment numbers continue in the same session folder.
+- **Reconnects:** if the stream drops, stalls (no data for `STALL_RESTART_SECONDS`) or Streamlink exits while the monitor still says LIVE, the recorder reconnects with back-off. Segment numbers continue in the same session folder. After `RECORDING_GIVE_UP_MINUTES` without receiving any data it gives up, and waits `RECORDING_RETRY_COOLDOWN_MINUTES` before trying that streamer again.
+- **Twitch ad breaks:** Streamlink removes ads and deliberately writes nothing until the ad ends. The recorder reads Streamlink's log ("Filtering out segments and pausing stream output" / "Resuming stream output") and doesn't treat that pause as a stall, up to `MAX_AD_BREAK_SECONDS`. The status line counts the ad breaks skipped.
+- **Disk guard:** no new recordings start below `MIN_FREE_DISK_GB` free; running recordings stop cleanly below half of it.
 - **Folders:**
 
   ```
@@ -170,14 +175,14 @@ The engine never makes up chat. Collection writes coverage markers, so analysis 
 
 ### Analysis
 
-Each finished segment is analysed together with the last `ANALYSIS_CONTEXT_SECONDS` (60 s) of the one before it. Moments in the final `SEGMENT_TAIL_GUARD_SECONDS` (25 s) are left to the next segment, which has the footage after them. Nothing at a boundary is missed or cut short.
+Each finished segment is analysed together with the last `ANALYSIS_CONTEXT_SECONDS` (60 s) of the one before it. The status line shows, for every segment, the moments found, the best score, which signals were available and any problem (for example `[audio+video; no chat, no ai] ⚠ audio classifier unavailable`). Moments in the final `SEGMENT_TAIL_GUARD_SECONDS` (25 s) are left to the next segment, which has the footage after them. Nothing at a boundary is missed or cut short.
 
 - **Stage 1, everything, cheap:**
   - YAMNet sound events every 0.48 s, plus loudness and silence.
   - Chat activity against its own baseline (median of the previous 10 minutes).
   - Scene changes, decoding keyframes only.
 
-  These are combined into an interest curve, and the top `MAX_CANDIDATES_PER_SEGMENT` peaks become candidates.
+  These are combined into an interest curve. Its strongest peaks relative to the segment's own baseline (up to `MAX_CANDIDATES_PER_SEGMENT`, ignoring anything below `STAGE1_MIN_INTEREST`) become candidates, so every eventful segment gets scored. Deciding what is clip-worthy is left to the scoring.
 - **Stage 2, candidates with a pre-score of at least `STAGE2_MIN_PRESCORE`:**
   - faster-whisper transcription with word timestamps, around the moment only.
   - Spoken cues: "oh my god", "no way", laughter in speech, a jump in speaking rate, short quotable lines.
@@ -240,7 +245,7 @@ The video is attached when it fits under `DISCORD_MAX_UPLOAD_MB` (10 MB by defau
 ### Reliability
 
 - Capture runs in its own threads and child processes. Analysis runs in separate worker processes, so analysis can never block or crash recording.
-- Segments are a persistent queue (sidecar status), processed in order per session and in parallel across streamers (`ANALYSIS_WORKERS`).
+- Segments are a persistent queue (sidecar status), processed in order per session and in parallel across streamers (`ANALYSIS_WORKERS`, default 2). The status line warns when the queue grows faster than the workers can process it. Each live streamer adds one segment per `RECORDING_SEGMENT_MINUTES`, so with many streamers raise `ANALYSIS_WORKERS` (CPU cores ÷ 3 is a good start), record fewer streamers, or record at 720p.
 - Failures retry after `PROCESSING_RETRY_DELAY_SECONDS`, up to `PROCESSING_MAX_ATTEMPTS`, then the segment is marked `failed` with the error.
 - A crashed worker process is replaced.
 - After a crash or restart, interrupted sessions are closed and half-processed segments are requeued.
@@ -263,10 +268,10 @@ Record and clip only streams you have the right to use: your own, or creators wh
 | Group | Settings |
 |---|---|
 | What to record | `CLIP_PLATFORMS`, `CLIP_ONLY` |
-| Recording | `RECORDING_SEGMENT_MINUTES`, `MAX_CONCURRENT_RECORDINGS`, `STREAM_QUALITY`, `STREAMLINK_EXTRA_ARGS`, `STREAM_TIMEOUT_SECONDS`, `STALL_RESTART_SECONDS`, `RECONNECT_DELAYS_SECONDS` |
-| Storage | `RECORDINGS_DIR`, `CLIPS_DIR`, `MAX_RECORDINGS_GB`, `RECORDING_RETENTION_HOURS`, `MAX_CLIPS_GB` |
+| Recording | `RECORDING_SEGMENT_MINUTES`, `MAX_CONCURRENT_RECORDINGS`, `STREAM_QUALITY`, `STREAMLINK_EXTRA_ARGS`, `STREAM_TIMEOUT_SECONDS`, `STALL_RESTART_SECONDS`, `MAX_AD_BREAK_SECONDS`, `RECONNECT_DELAYS_SECONDS`, `RECORDING_GIVE_UP_MINUTES`, `RECORDING_RETRY_COOLDOWN_MINUTES` |
+| Storage | `RECORDINGS_DIR`, `CLIPS_DIR`, `MAX_RECORDINGS_GB`, `RECORDING_RETENTION_HOURS`, `MAX_CLIPS_GB`, `MIN_FREE_DISK_GB` |
 | Chat | `ENABLE_CHAT_COLLECTION`, `CHAT_REACTION_DELAY_SECONDS`, `CHAT_SYNC_OFFSET_SECONDS`, `YOUTUBE_CHAT_*`, `KICK_WEBHOOK_*` |
-| Analysis | `ENABLE_AUDIO_ANALYSIS`, `ENABLE_CHAT_ANALYSIS`, `ENABLE_VIDEO_ANALYSIS`, `ENABLE_TRANSCRIPTION`, `ENABLE_AI_EVALUATION`, `ANALYSIS_CONTEXT_SECONDS`, `SEGMENT_TAIL_GUARD_SECONDS`, `MAX_CANDIDATES_PER_SEGMENT`, `STAGE2_MIN_PRESCORE`, `AI_*`, `WHISPER_*`, `CLAUDE_*`, `LAUGHTER_THRESHOLD`, `SCREAM_THRESHOLD`, `CHEER_THRESHOLD` |
+| Analysis | `ENABLE_AUDIO_ANALYSIS`, `ENABLE_CHAT_ANALYSIS`, `ENABLE_VIDEO_ANALYSIS`, `ENABLE_TRANSCRIPTION`, `ENABLE_AI_EVALUATION`, `ANALYSIS_CONTEXT_SECONDS`, `SEGMENT_TAIL_GUARD_SECONDS`, `MAX_CANDIDATES_PER_SEGMENT`, `STAGE1_MIN_INTEREST`, `STAGE2_MIN_PRESCORE`, `AI_*`, `WHISPER_*`, `CLAUDE_*`, `LAUGHTER_THRESHOLD`, `SCREAM_THRESHOLD`, `CHEER_THRESHOLD` |
 | Scoring | `SCORE_WEIGHTS`, `SINGLE_SIGNAL_FACTOR`, `MINIMUM_VIRAL_SCORE`, `MAX_CLIPS_PER_SEGMENT`, `DEDUPE_GAP_SECONDS` |
 | Clips | `DEFAULT_CLIP_DURATION`, `MIN_CLIP_DURATION`, `MAX_CLIP_DURATION`, `PRE_CLIP_BUFFER_SECONDS`, `POST_CLIP_BUFFER_SECONDS`, `OUTPUT_RESOLUTION`, `OUTPUT_FORMAT`, `OUTPUT_CRF`, `OUTPUT_PRESET`, `TARGET_LOUDNESS_LUFS`, `LAYOUT`, `GAMEPLAY_FILL`, `CAPTIONS`, `ANIMATED_CAPTIONS`, `CAPTION_FONT`, `CAPTION_FONT_SIZE`, `CAPTION_MAX_WORDS` |
 | Discord | `DISCORD_NOTIFICATIONS`, `DISCORD_MAX_UPLOAD_MB`, `DISCORD_SEND_PREVIEW_IF_TOO_LARGE`, `CLIP_PUBLIC_BASE_URL` |
@@ -275,7 +280,7 @@ Record and clip only streams you have the right to use: your own, or creators wh
 ## Tests
 
 ```bash
-python -m pytest clipping_engine/tests            # ~2.5 minutes; needs FFmpeg and Streamlink
+python -m pytest clipping_engine/tests            # ~3.5 minutes; needs FFmpeg and Streamlink
 ```
 
 The first run downloads small test files into `clipping_engine/tests/.cache/` (git-ignored): the YAMNet and YuNet models, a few ESC-50 sound clips (CC BY-NC, used only locally for testing), a LibriSpeech utterance and OpenCV's sample face photo. The tests never call Twitch, Kick, YouTube, Discord or Claude, and they don't download Whisper weights.
@@ -289,7 +294,9 @@ The first run downloads small test files into `clipping_engine/tests/.cache/` (g
 | `no chat – Twitch chat not authorized` | `python -m clipping_engine auth twitch` |
 | YouTube `no chat – ... HTTP 403` | Google refused key-only access for that chat; the stream is analysed without chat |
 | `transcription unavailable` in the notes | The Whisper download failed or `ENABLE_TRANSCRIPTION` is off; set `WHISPER_MODEL` to a local CTranslate2 model folder to work offline |
-| No clips | Check the moments in `segment_NNNN.json` (`moments`, `analysis_notes`). Lower `MINIMUM_VIRAL_SCORE` while tuning. |
+| No clips / "0 moments" | Read the segment's status line or `analysis_notes` in `segment_NNNN.json`. `no chat` → run `auth twitch`. `audio classifier unavailable` → YAMNet's runtime isn't installed (no Intel-Mac build). Low `stage 1 peak interest` on every segment means nothing stood out. Lower `MINIMUM_VIRAL_SCORE` while tuning. |
+| "stream stalled" / reconnect loops | Update to this version (Twitch ad breaks were mistaken for stalls). Persistent stalls on many streams at once usually mean the connection can't carry them all at 1080p60. |
+| "analysis is falling behind" | Raise `ANALYSIS_WORKERS`, record fewer streamers, or set `STREAM_QUALITY = "720p60,720p,best"`. |
 | Discord says too large | Raise `DISCORD_MAX_UPLOAD_MB` for boosted servers, or set `CLIP_PUBLIC_BASE_URL` |
 
 ## Project structure

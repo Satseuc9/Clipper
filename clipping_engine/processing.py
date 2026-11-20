@@ -117,9 +117,14 @@ def stage1(win, audio):
                 if chat and win.tm is not None else None,
         "video": video_analyzer.keyframe_change_curve(win.inputs, win.seconds, win.input_start),
     }
+    if chat is not None and not chat.available:
+        from clipping_engine.chat.chat_log import unavailable_reason
+        notes.append(f"no chat data: {unavailable_reason(win.session_dir) or 'chat was not collected'}")
     curve = viral_scorer.stage1_curve(curves)
     own_start, own_end = win.owned()
     candidates = viral_scorer.find_candidates(curve, own_start, own_end)
+    if curve is not None and own_end > own_start:
+        notes.append(f"stage 1 peak interest {float(curve[int(own_start):int(own_end)].max()):.2f}")
     for c in candidates:
         c["audio"] = audio_analyzer.score_moment(feats, c["event_start"], c["event_end"]) if feats else None
         c["chat"] = chat_analyzer.score_moment(chat, win.to_abs(c["event_start"]), win.to_abs(c["event_end"])) \
@@ -333,6 +338,8 @@ def process_segment(session_dir, index, snapshot=None):
                     chat_coverage=round(chat.coverage, 2) if chat else None, analyzed=time.time())
     else:
         moments = side["moments"]                              # resume after a crash
+        curves = side.get("signals_available") or {}
+        notes = list(side.get("analysis_notes") or [])
 
     selected = [m for m in moments if m["viral_score"] >= config.MINIMUM_VIRAL_SCORE][: config.MAX_CLIPS_PER_SEGMENT]
     clips, sent = [], 0
@@ -361,7 +368,9 @@ def process_segment(session_dir, index, snapshot=None):
     if notes:
         update_json(side_path, analysis_notes=notes)
     best = moments[0]["viral_score"] if moments else None
-    return {"candidates": len(moments), "best_score": best, "clips": clips, "sent": sent, "notes": notes}
+    return {"candidates": len(moments), "best_score": best, "clips": clips, "sent": sent, "notes": notes,
+            "signals": curves, "ai": any(m["components"].get("ai") is not None for m in moments),
+            "speech": any(m["components"].get("speech") is not None for m in moments)}
 
 
 def apply_snapshot(snapshot):

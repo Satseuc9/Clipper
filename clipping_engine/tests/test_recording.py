@@ -1,6 +1,8 @@
 """Recording engine: real Streamlink + FFmpeg against a local live HLS stream."""
 
 import json
+import sys
+from pathlib import Path
 
 import numpy as np
 
@@ -185,3 +187,82 @@ def test_capture_logs_timing_samples(engine, live_hls):
     tm = segment_manager.time_map(rec.session_dir, 1)
     last = lines[-1]
     assert abs(tm.wall(last["media"]) - last["wall"]) < 3      # steady state: received ~live
+
+
+# ---------------------------------------------------------------- lessons from the first live run
+
+FAKE = Path(__file__).with_name("fake_streamlink.py")
+
+
+@pytest.fixture
+def fake_streamlink(engine, monkeypatch):
+    if sys.platform == "win32":
+        pytest.skip("uses an executable script as the streamlink binary")
+    monkeypatch.setattr(engine, "STREAMLINK_PATH", str(FAKE))
+    monkeypatch.setattr(engine, "STALL_RESTART_SECONDS", 8)     # > FFmpeg's ~5 s initial probe
+    from clipping_engine.capture import streamlink_manager
+    streamlink_manager.can_handle_url.cache_clear()
+    streamlink_manager.streamlink_version.cache_clear()
+    yield monkeypatch
+    streamlink_manager.can_handle_url.cache_clear()
+    streamlink_manager.streamlink_version.cache_clear()
+
+
+def test_twitch_ad_break_is_not_a_stall(fake_streamlink):
+    """Streamlink pauses output during ad breaks; that must not trigger a reconnect."""
+    fake_streamlink.setenv("FAKE_PAUSE_AT", "10")
+    fake_streamlink.setenv("FAKE_PAUSE_SECONDS", "15")           # > STALL_RESTART_SECONDS
+    rm = RecordingManager()
+    rm.ensure_recording(target("adbreak", "https://twitch.tv/adbreak"))
+    rec = rm.recorders[("twitch", "adbreak")]
+    assert wait_for(lambda: rec.segments >= 1, 20), "recording before the ad"
+    assert wait_for(lambda: rec.state == "recording (ad break)", 20)
+    assert wait_for(lambda: rec.state == "recording", 20), "resumes after the ad"
+    before = rec.segments
+    assert wait_for(lambda: rec.segments > before, 15)
+    rm.stop_all(30)
+    assert rec.run_number == 1, "no reconnect during the ad break"
+    assert rec.ad_breaks == 1
+    assert "1 ad break(s) skipped" in "".join(rm.status_lines()) or not rec.is_alive()
+
+
+def test_real_stall_still_restarts(fake_streamlink):
+    fake_streamlink.setenv("FAKE_PAUSE_AT", "10")
+    fake_streamlink.setenv("FAKE_PAUSE_SECONDS", "15")
+    fake_streamlink.setenv("FAKE_PAUSE_SILENT", "1")              # no ad-filter log lines
+    rm = RecordingManager()
+    rm.ensure_recording(target("stally", "https://twitch.tv/stally"))
+    rec = rm.recorders[("twitch", "stally")]
+    assert wait_for(lambda: rec.segments >= 1, 20), "recording before the stall"
+    assert rec.run_number == 1
+    assert wait_for(lambda: rec.run_number >= 2, 30), "a genuine stall is restarted"
+    rm.stop_all(30)
+    assert "stalled" in (rec.last_error or "")
+
+
+def test_gives_up_and_cools_down(engine, monkeypatch):
+    from clipping_engine.tests.conftest import free_port
+    monkeypatch.setattr(engine, "RECORDING_GIVE_UP_MINUTES", 0.05)       # 3 seconds
+    monkeypatch.setattr(engine, "RECORDING_RETRY_COOLDOWN_MINUTES", 10)
+    rm = RecordingManager()
+    dead = target("nobody", f"hls://http://127.0.0.1:{free_port()}/live.m3u8")
+    assert rm.ensure_recording(dead) == "started"
+    rec = rm.recorders[("twitch", "nobody")]
+    rec.join(90)
+    assert rec.state == "gave up" and "without data" in rec.last_error
+    rm.reap()
+    assert "retrying in" in rm.ensure_recording(dead), "no endless restart loop"
+    assert not rm.recorders
+
+
+def test_low_disk_space_blocks_new_recordings(engine, monkeypatch):
+    from clipping_engine.capture import recording_manager
+    monkeypatch.setattr(recording_manager, "free_gb", lambda path: 3.0)
+    rm = RecordingManager()
+    assert "GB free" in rm.ensure_recording(target("full", "https://twitch.tv/full"))
+    assert not rm.recorders
+
+
+def test_folder_names_keep_underscores(engine):
+    assert storage.safe_name("caseoh_") == "caseoh_" and storage.safe_name("caseoh") == "caseoh"
+    assert storage.safe_name("..") == "unnamed" and storage.safe_name("a/b") == "a_b"
