@@ -2,6 +2,8 @@
 
 import subprocess
 
+import pytest
+
 
 from clipping_engine import config
 from clipping_engine.notifications import discord_notifier
@@ -92,3 +94,46 @@ def test_not_configured(monkeypatch):
     monkeypatch.delenv("DISCORD_WEBHOOK_URL", raising=False)
     assert not discord_notifier.enabled()
     assert discord_notifier.notify({"path": "x"})["sent"] is False
+
+
+@pytest.mark.parametrize("url,problem", [
+    ("", "not set"),
+    ("https://discord.com/channels/1234567890/9876543210", "channel link"),
+    ("https://discord.com/api/webhooks/123", "doesn't look like"),
+    ("https://discord.com/api/webhooks/1234567890/AbC-def_123", None),
+    ("https://discordapp.com/api/webhooks/1234567890/AbC-def_123", None),
+    ('"https://discord.com/api/webhooks/1234567890/AbC"', None),        # quoted in .env
+])
+def test_webhook_url_problems(monkeypatch, url, problem):
+    monkeypatch.setenv("DISCORD_WEBHOOK_URL", url)
+    found = discord_notifier.url_problem()
+    if problem is None:
+        assert found is None
+    else:
+        assert problem in found and "1234567890" not in found, "never echo the URL"
+
+
+def test_send_test_message(discord):
+    ok, message = discord_notifier.send_test()
+    assert ok and discord.requests[0]["payload"]["content"].startswith("✅ Clipper test message")
+    discord.script = [404]
+    ok, message = discord_notifier.send_test()
+    assert not ok and "deleted" in message and "SECRET-TOKEN" not in message
+
+
+@needs_ffmpeg
+def test_send_pending_posts_clips_made_before_discord_was_set_up(discord, engine, tmp_path, capsys):
+    from clipping_engine import main
+    from clipping_engine.storage import clip_storage, recording_storage as storage
+    session = storage.new_session_dir("twitch", "xqc", {"platform": "twitch", "streamer": "xqc"})
+    clip = make_clip(tmp_path / "clip.mp4")
+    storage.write_json(clip.with_suffix(".json"), clip_dict(clip))
+    clip_storage.register_clip(session, {"id": "c1", "abs_start": 0, "abs_end": 40, "abs_peak": 20,
+                                         "score": 90, "path": str(clip), "notified": False})
+    assert main.run_discord(send_pending=False) == 0
+    assert "Clips made but not yet posted: 1" in capsys.readouterr().out
+    assert main.run_discord(send_pending=True) == 0
+    assert "Posted 1 of 1" in capsys.readouterr().out
+    assert clip_storage.load_registry(session)[0]["notified"] is True
+    assert discord.requests[-1]["files"]["files[0]"][0] == "clip.mp4"
+    assert main.unsent_clips() == []

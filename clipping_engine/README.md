@@ -93,6 +93,7 @@ This also installs the monitor's dependencies. Optional: `pip install nvidia-cub
 cp clipping_engine/.env.example clipping_engine/.env      # then fill it in
 python -m clipping_engine auth twitch                     # one-time login for Twitch chat
 python -m clipping_engine check                           # shows what is ready
+python -m clipping_engine discord                         # posts a test message to your channel
 ```
 
 `auth twitch` prints a URL and a code. Open the URL, log in with the account that should read chat (it can be your own), and approve. The token is saved to `clipping_engine/.tokens/twitch_user.json` (git-ignored, owner-only permissions) and refreshed automatically. Device-code login needs the Twitch app's settings to allow it. If Twitch rejects it, register a second app at dev.twitch.tv with Client Type **Public** and put its ID in `TWITCH_CHAT_CLIENT_ID`.
@@ -298,6 +299,7 @@ The first run downloads small test files into `clipping_engine/tests/.cache/` (g
 | No clips / "0 moments" | Read the segment's status line or `analysis_notes` in `segment_NNNN.json`. `no chat` → run `auth twitch`. `audio classifier unavailable` → YAMNet's runtime isn't installed (no Intel-Mac build). Low `stage 1 peak interest` on every segment means nothing stood out. Lower `MINIMUM_VIRAL_SCORE` while tuning. |
 | "stream stalled" / reconnect loops | Update to this version (Twitch ad breaks were mistaken for stalls). Persistent stalls on many streams at once usually mean the connection can't carry them all. |
 | "analysis is falling behind" | Lower `MAX_CONCURRENT_RECORDINGS`, or set `ANALYSIS_WORKERS` to a number above the auto value (and `ANALYSIS_NICENESS = 0`) if the computer has headroom. |
+| Clips don't appear in Discord | Run `python -m clipping_engine discord`. It checks `DISCORD_WEBHOOK_URL` (a channel link instead of a webhook URL is the usual mistake), posts a test message, and lists clips that were made but never posted. `--send-pending` posts those. Restart the engine after editing `.env`. Only moments scoring at least `MINIMUM_VIRAL_SCORE` become clips, so no clips can also simply mean nothing scored high enough yet. |
 | Discord says too large | Raise `DISCORD_MAX_UPLOAD_MB` for boosted servers, or set `CLIP_PUBLIC_BASE_URL` |
 
 ## Project structure

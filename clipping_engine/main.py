@@ -5,6 +5,7 @@ AI clipping engine.
     python -m clipping_engine --interval 30      same, monitor every 30 s
     python -m clipping_engine check              check FFmpeg, Streamlink, models, credentials
     python -m clipping_engine auth twitch        one-time login for Twitch chat (EventSub)
+    python -m clipping_engine discord            test the Discord webhook (--send-pending posts unsent clips)
     python -m clipping_engine mock VIDEO [--chat CHAT.jsonl] [--streamer NAME] [--no-discord]
                                                  analyse a prerecorded video, no live connection
 
@@ -199,8 +200,8 @@ def run_check():
         row(False, "faster-whisper", "not installed")
     row(ai_evaluator.available(), "Claude (AI evaluation)",
         config.CLAUDE_MODEL if ai_evaluator.available() else "ANTHROPIC_API_KEY not set (AI signal skipped)")
-    row(discord_notifier.enabled(), "Discord", "webhook configured" if discord_notifier.enabled()
-        else "DISCORD_WEBHOOK_URL not set")
+    row(discord_notifier.enabled(), "Discord", "webhook configured (test it: python -m clipping_engine discord)"
+        if discord_notifier.enabled() else discord_notifier.status())
     from clipping_engine.chat.twitch_chat import TwitchUserToken, chat_client_credentials
     cid, secret = chat_client_credentials()
     row(TwitchUserToken(cid, secret).available, "Twitch chat",
@@ -226,6 +227,47 @@ def run_auth(service):
     return 0
 
 
+def unsent_clips():
+    """(session_dir, registry entry) for clips that were made but never posted to Discord."""
+    from clipping_engine.storage import clip_storage
+    from clipping_engine.storage.recording_storage import list_sessions
+    out = []
+    for session in list_sessions():
+        for entry in clip_storage.load_registry(session):
+            if not entry.get("notified") and Path(entry.get("path", "")).exists():
+                out.append((session, entry))
+    return out
+
+
+def run_discord(send_pending=False):
+    """Check the webhook, post a test message, and optionally post clips that were never sent."""
+    from clipping_engine.notifications import discord_notifier
+    from clipping_engine.storage import clip_storage
+    from clipping_engine.storage.recording_storage import read_json
+    ok, message = discord_notifier.send_test()
+    print(f"[{'OK' if ok else '--'}] Discord: {message}")
+    pending = unsent_clips()
+    print(f"Clips made but not yet posted: {len(pending)}")
+    if not pending:
+        print(f"(Only moments scoring at least MINIMUM_VIRAL_SCORE={config.MINIMUM_VIRAL_SCORE} become clips.)")
+    if not ok:
+        return 1
+    if pending and not send_pending:
+        print("Post them with: python -m clipping_engine discord --send-pending")
+    if send_pending:
+        sent = 0
+        for session, entry in pending:
+            clip = read_json(Path(entry["path"]).with_suffix(".json"))
+            result = discord_notifier.notify(clip)
+            if result["sent"]:
+                clip_storage.update_clip(session, entry["id"], notified=True, attached=result["attached"])
+                sent += 1
+            else:
+                print(f"  failed: {Path(entry['path']).name}: {result['error']}")
+        print(f"Posted {sent} of {len(pending)} clip(s).")
+    return 0
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="python -m clipping_engine",
                                      description="Record live streams and turn their best moments into vertical clips.")
@@ -235,6 +277,8 @@ def main(argv=None):
     sub.add_parser("check", help="check dependencies and credentials")
     auth = sub.add_parser("auth", help="one-time login for chat access")
     auth.add_argument("service", choices=["twitch"])
+    disc = sub.add_parser("discord", help="test the Discord webhook and post clips that were never sent")
+    disc.add_argument("--send-pending", action="store_true", help="post clips that were made but never sent")
     mock = sub.add_parser("mock", help="analyse a prerecorded video without live connections")
     mock.add_argument("video")
     mock.add_argument("--chat", help="JSON lines chat file (t or ts, user, text)")
@@ -248,6 +292,8 @@ def main(argv=None):
     setup_logging(args.verbose)
     if args.command == "check":
         return run_check()
+    if args.command == "discord":
+        return run_discord(args.send_pending)
     if args.command == "auth":
         return run_auth(args.service)
     if args.command == "mock":

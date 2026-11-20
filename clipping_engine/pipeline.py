@@ -257,6 +257,10 @@ class Pipeline:
         workers = f"{self.workers} worker{'' if self.workers == 1 else 's'}"
         lines = [f"  ⚙ analysis ({workers}): {len(self.inflight)} running, {waiting} waiting "
                  f"({gb:.1f} GB), {self.clips_sent} clip(s) sent"]
+        from clipping_engine.notifications import discord_notifier
+        problem = discord_notifier.status()
+        if problem:
+            lines.append(f"  ⚠ clips are saved but not posted: {problem}")
         if waiting > max(3, 2 * self.workers):
             lines.append(f"  ⚠ analysis is falling behind ({self.workers} worker(s)): raise ANALYSIS_WORKERS, "
                          f"record fewer streamers or use a lower STREAM_QUALITY")
