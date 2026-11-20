@@ -18,7 +18,7 @@ stream-monitor says LIVE ──► Streamlink ─► FFmpeg ─► 10-minute seg
 
 ## What was tested, and how
 
-Every component is covered by `clipping_engine/tests` (64 tests). Platforms that can't be reached from a test machine are replaced by local servers that speak the documented formats.
+Every component is covered by `clipping_engine/tests` (79 tests). Platforms that can't be reached from a test machine are replaced by local servers that speak the documented formats.
 
 | Component | Tested with |
 |---|---|
@@ -52,7 +52,7 @@ Every component is covered by `clipping_engine/tests` (64 tests). Platforms that
   - Windows: `winget install Gyan.FFmpeg`
   - macOS: `brew install ffmpeg`
   - Debian/Ubuntu: `sudo apt install ffmpeg`
-- **Disk:** about 2.5–4 GB per hour per streamer at 1080p60 while segments wait to be processed. Limits are configurable.
+- **Disk:** about 1.5–2 GB per hour per streamer at the default 720p60 (2.5–4 GB at 1080p60) while segments wait to be processed. Limits are configurable.
 - **CPU/GPU:** recording itself is cheap, because packets are copied without re-encoding. Analysis is the heavy part:
   - Whisper `small` needs roughly a minute of CPU time for the candidate windows of a 10-minute segment (a rough estimate; it depends on how much is said). An NVIDIA GPU is much faster.
   - Rendering a 60 s clip takes 20–60 s of CPU time.
@@ -106,7 +106,7 @@ python -m clipping_engine                    # monitor + record + clip; CTRL+C t
 python -m clipping_engine --interval 30      # monitor every 30 s (platform limits still apply)
 ```
 
-The terminal shows the monitor's normal report, followed by a **CLIPPING ENGINE** section: recordings in progress, chat status per stream, the analysis queue and recent results. Details go to `clipping_engine/logs/engine.log` and `worker.log`.
+The terminal shows the monitor's normal report, followed by a **CLIPPING ENGINE** section: recordings in progress (magenta ●; green = recording, cyan = ad break, orange = reconnecting), why a streamer isn't being recorded, chat status, the analysis queue with the **clips sent** count, and the last five results (errors in pink-red, warnings in orange). It uses the monitor's color palette and the same plain-text fallback. Details go to `clipping_engine/logs/engine.log` and `worker.log`.
 
 CTRL+C finishes the current segments cleanly. Press it again to stop immediately. Anything not yet analysed is processed on the next start.
 
@@ -134,12 +134,13 @@ The video is split exactly like a live recording and runs through the full pipel
 - When the monitor reports a streamer as **LIVE** (a fresh result, not one kept from memory after an API error), a `Recorder` starts:
 
   ```
-  streamlink --stdout <url> 1080p60,1080p,...,best  |  ffmpeg -c copy -f segment -segment_time 600 ...
+  streamlink --stdout <url> 720p60,720p,best  |  ffmpeg -c copy -f segment -segment_time 600 ...
   ```
 
   FFmpeg copies the audio and video packets without re-encoding, so A/V sync is untouched. Each segment is a standalone MPEG-TS file with its own timestamps.
 - The recorder stops on **OFFLINE**, or when the streamer is removed from `stream-monitor/config.py`. **UNKNOWN** never stops a recording.
-- There is one recorder per streamer, up to `MAX_CONCURRENT_RECORDINGS`, each in its own threads and child processes.
+- There is one recorder per streamer, up to `MAX_CONCURRENT_RECORDINGS` (default 3), each in its own threads and child processes. Streamers that go live once the limit is reached are listed as "not recording" and start as soon as a slot frees up.
+- **Quality:** `STREAM_QUALITY` defaults to 720p (`720p60,720p,best`), which keeps analysis fast and disk use moderate. 720p is upscaled for the 1080x1920 output, so face crops are a little softer. For sharper clips, put `1080p60,1080p` first, at the cost of more disk and slower analysis.
 - Before the first capture, the engine runs `streamlink --can-handle-url` to check that the installed Streamlink has a plugin for each platform. `check` shows the result.
 - **Reconnects:** if the stream drops, stalls (no data for `STALL_RESTART_SECONDS`) or Streamlink exits while the monitor still says LIVE, the recorder reconnects with back-off. Segment numbers continue in the same session folder. After `RECORDING_GIVE_UP_MINUTES` without receiving any data it gives up, and waits `RECORDING_RETRY_COOLDOWN_MINUTES` before trying that streamer again.
 - **Twitch ad breaks:** Streamlink removes ads and deliberately writes nothing until the ad ends. The recorder reads Streamlink's log ("Filtering out segments and pausing stream output" / "Resuming stream output") and doesn't treat that pause as a stall, up to `MAX_AD_BREAK_SECONDS`. The status line counts the ad breaks skipped.
@@ -245,7 +246,7 @@ The video is attached when it fits under `DISCORD_MAX_UPLOAD_MB` (10 MB by defau
 ### Reliability
 
 - Capture runs in its own threads and child processes. Analysis runs in separate worker processes, so analysis can never block or crash recording.
-- Segments are a persistent queue (sidecar status), processed in order per session and in parallel across streamers (`ANALYSIS_WORKERS`, default 2). The status line warns when the queue grows faster than the workers can process it. Each live streamer adds one segment per `RECORDING_SEGMENT_MINUTES`, so with many streamers raise `ANALYSIS_WORKERS` (CPU cores ÷ 3 is a good start), record fewer streamers, or record at 720p.
+- Segments are a persistent queue (sidecar status), processed in order per session and in parallel across streamers. `ANALYSIS_WORKERS = "auto"` uses half of the Mac's performance cores, between 1 and 3 (2 on M1–M4, 3 on Pro/Max chips; all cores ÷ 4 on other computers). Set a number to override. Analysis runs at lower CPU priority (`ANALYSIS_NICENESS`, default 10) so the computer stays responsive; recording keeps normal priority. The status line shows the worker count and warns when the queue grows faster than the workers can process it.
 - Failures retry after `PROCESSING_RETRY_DELAY_SECONDS`, up to `PROCESSING_MAX_ATTEMPTS`, then the segment is marked `failed` with the error.
 - A crashed worker process is replaced.
 - After a crash or restart, interrupted sessions are closed and half-processed segments are requeued.
@@ -275,7 +276,7 @@ Record and clip only streams you have the right to use: your own, or creators wh
 | Scoring | `SCORE_WEIGHTS`, `SINGLE_SIGNAL_FACTOR`, `MINIMUM_VIRAL_SCORE`, `MAX_CLIPS_PER_SEGMENT`, `DEDUPE_GAP_SECONDS` |
 | Clips | `DEFAULT_CLIP_DURATION`, `MIN_CLIP_DURATION`, `MAX_CLIP_DURATION`, `PRE_CLIP_BUFFER_SECONDS`, `POST_CLIP_BUFFER_SECONDS`, `OUTPUT_RESOLUTION`, `OUTPUT_FORMAT`, `OUTPUT_CRF`, `OUTPUT_PRESET`, `TARGET_LOUDNESS_LUFS`, `LAYOUT`, `GAMEPLAY_FILL`, `CAPTIONS`, `ANIMATED_CAPTIONS`, `CAPTION_FONT`, `CAPTION_FONT_SIZE`, `CAPTION_MAX_WORDS` |
 | Discord | `DISCORD_NOTIFICATIONS`, `DISCORD_MAX_UPLOAD_MB`, `DISCORD_SEND_PREVIEW_IF_TOO_LARGE`, `CLIP_PUBLIC_BASE_URL` |
-| Processing | `ANALYSIS_WORKERS`, `PROCESSING_MAX_ATTEMPTS`, `PROCESSING_RETRY_DELAY_SECONDS` |
+| Processing | `ANALYSIS_WORKERS`, `ANALYSIS_NICENESS`, `PROCESSING_MAX_ATTEMPTS`, `PROCESSING_RETRY_DELAY_SECONDS` |
 
 ## Tests
 
@@ -295,8 +296,8 @@ The first run downloads small test files into `clipping_engine/tests/.cache/` (g
 | YouTube `no chat – ... HTTP 403` | Google refused key-only access for that chat; the stream is analysed without chat |
 | `transcription unavailable` in the notes | The Whisper download failed or `ENABLE_TRANSCRIPTION` is off; set `WHISPER_MODEL` to a local CTranslate2 model folder to work offline |
 | No clips / "0 moments" | Read the segment's status line or `analysis_notes` in `segment_NNNN.json`. `no chat` → run `auth twitch`. `audio classifier unavailable` → YAMNet's runtime isn't installed (no Intel-Mac build). Low `stage 1 peak interest` on every segment means nothing stood out. Lower `MINIMUM_VIRAL_SCORE` while tuning. |
-| "stream stalled" / reconnect loops | Update to this version (Twitch ad breaks were mistaken for stalls). Persistent stalls on many streams at once usually mean the connection can't carry them all at 1080p60. |
-| "analysis is falling behind" | Raise `ANALYSIS_WORKERS`, record fewer streamers, or set `STREAM_QUALITY = "720p60,720p,best"`. |
+| "stream stalled" / reconnect loops | Update to this version (Twitch ad breaks were mistaken for stalls). Persistent stalls on many streams at once usually mean the connection can't carry them all. |
+| "analysis is falling behind" | Lower `MAX_CONCURRENT_RECORDINGS`, or set `ANALYSIS_WORKERS` to a number above the auto value (and `ANALYSIS_NICENESS = 0`) if the computer has headroom. |
 | Discord says too large | Raise `DISCORD_MAX_UPLOAD_MB` for boosted servers, or set `CLIP_PUBLIC_BASE_URL` |
 
 ## Project structure

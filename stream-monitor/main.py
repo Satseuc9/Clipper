@@ -133,7 +133,8 @@ def run_monitor(interval, once=False, on_cycle=None):
 
             terminal.clear_screen()
             earlier = tracker.history[: len(tracker.history) - len(changes)]
-            totals = terminal.print_report(sections, earlier, config.RECENT_CHANGES_TO_SHOW, warnings)
+            totals = terminal.print_report(sections, earlier, config.RECENT_CHANGES_TO_SHOW, warnings,
+                                           show_totals=False)      # the cycle footer shows them
             for change in changes:
                 terminal.print_change(change)
             for line in _call_hook(on_cycle, sections, changes):

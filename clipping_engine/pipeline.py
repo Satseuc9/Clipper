@@ -14,7 +14,10 @@ Processing queue: finished segments -> worker processes -> clips.
 
 import logging
 import multiprocessing
+import os
 import signal
+import subprocess
+import sys
 import threading
 import time
 from collections import deque
@@ -31,10 +34,38 @@ log = logging.getLogger(__name__)
 CLEANUP_EVERY = 600
 
 
+def _performance_cores():
+    """Performance-core count on Apple silicon Macs, else None."""
+    if sys.platform != "darwin":
+        return None
+    try:
+        out = subprocess.run(["sysctl", "-n", "hw.perflevel0.physicalcpu"], capture_output=True,
+                             text=True, timeout=5)
+        return int(out.stdout.strip()) if out.returncode == 0 else None
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+
+
+def resolve_workers(setting=None):
+    """ANALYSIS_WORKERS as a number ("auto" -> based on this computer's CPU)."""
+    setting = config.ANALYSIS_WORKERS if setting is None else setting
+    if isinstance(setting, int) and setting > 0:
+        return setting
+    perf = _performance_cores()
+    if perf:
+        return max(1, min(3, perf // 2))
+    return max(1, min(3, (os.cpu_count() or 4) // 4))
+
+
 def _worker_init(snapshot):
     signal.signal(signal.SIGINT, signal.SIG_IGN)     # CTRL+C is handled by the main process
     from clipping_engine.processing import apply_snapshot
     apply_snapshot(snapshot)
+    if config.ANALYSIS_NICENESS and hasattr(os, "nice"):
+        try:
+            os.nice(int(config.ANALYSIS_NICENESS))     # FFmpeg/Whisper children inherit it
+        except OSError:
+            pass
     try:
         logs = config.ENGINE_DIR / "logs"
         logs.mkdir(parents=True, exist_ok=True)
@@ -46,7 +77,7 @@ def _worker_init(snapshot):
 
 class Pipeline:
     def __init__(self, workers=None, process_fn=None, use_processes=True):
-        self.workers = workers or config.ANALYSIS_WORKERS
+        self.workers = workers or resolve_workers()
         self.process_fn = process_fn or process_segment
         self.use_processes = use_processes
         self.executor = None
@@ -207,12 +238,13 @@ class Pipeline:
 
     def status_lines(self):
         waiting, gb = self.backlog()
-        lines = [f"  ⚙ analysis: {len(self.inflight)} running, {waiting} waiting ({gb:.1f} GB), "
-                 f"{self.clips_sent} clip(s) sent"]
+        workers = f"{self.workers} worker{'' if self.workers == 1 else 's'}"
+        lines = [f"  ⚙ analysis ({workers}): {len(self.inflight)} running, {waiting} waiting "
+                 f"({gb:.1f} GB), {self.clips_sent} clip(s) sent"]
         if waiting > max(3, 2 * self.workers):
             lines.append(f"  ⚠ analysis is falling behind ({self.workers} worker(s)): raise ANALYSIS_WORKERS, "
                          f"record fewer streamers or use a lower STREAM_QUALITY")
-        lines += [f"    {e}" for e in self.events]
+        lines += [f"    {e}" for e in list(self.events)[-5:]]      # compact: last 5 results
         return lines
 
 

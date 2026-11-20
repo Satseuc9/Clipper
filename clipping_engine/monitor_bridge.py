@@ -11,6 +11,7 @@ recording decisions:
   UNKNOWN / a stale row kept from memory after an API error -> no change
 """
 
+import re
 import sys
 
 from clipping_engine import config
@@ -63,10 +64,65 @@ def make_hook(recorder, chat_manager, pipeline, is_stale):
         for target in to_start:
             recorder.ensure_recording(target)
         recorder.reap()
-        lines = ["", "=" * 60, "CLIPPING ENGINE"]
         rec = recorder.status_lines()
-        lines += rec or ["  (no live streamers being recorded)"]
+        lines = rec or ["  (no live streamers being recorded)"]
         lines += chat_manager.status_lines() if chat_manager else []
         lines += pipeline.status_lines()
-        return lines
+        return engine_section(lines)
     return on_cycle
+
+
+# ---------------------------------------------------------------- display
+
+_REC = re.compile(r"^(\s*)● ([^:]+): ([^,]+)(.*)$")
+_IDLE = re.compile(r"^(\s*)○ ([^:]+): (.*)$")
+_EVENT = re.compile(r"^(\s*)(\[\d\d:\d\d:\d\d\])(.*)$")
+
+
+def _ui():
+    load_monitor()                         # makes stream-monitor's utils importable
+    from utils import terminal             # noqa: E402
+    return terminal
+
+
+def engine_section(lines):
+    """Heading + status lines, colored with the monitor's palette (plain text when color is off)."""
+    ui = _ui()
+    return ["", ui.rule(heavy=True, label="CLIPPING ENGINE")] + [style_line(line, ui) for line in lines]
+
+
+def style_line(line, ui):
+    p = ui.paint
+    m = _REC.match(line)
+    if m:                                                    # a recording
+        indent, who, state, rest = m.groups()
+        role = ("warn" if state.startswith("reconnecting") else
+                "info" if "ad break" in state or state.startswith("starting") else
+                "dim" if state.startswith("stopping") else "live")
+        return f"{indent}{p('●', 'rec')} {p(who, bold=True)}: {p(state, role)}{p(rest, 'dim')}"
+    m = _IDLE.match(line)
+    if m:                                                    # not recording, with the reason
+        indent, who, reason = m.groups()
+        return f"{indent}{p('○', 'offline')} {who}: {p(reason, 'warn')}"
+    stripped = line.strip()
+    if stripped.startswith("💬"):
+        return p(line, "unknown") if "no chat" in stripped else line
+    if stripped.startswith("⚙"):                              # analysis queue + clips sent
+        line = re.sub(r"(\d+ clip\(s\) sent)", lambda x: p(x.group(1), "title", bold=True), line)
+        line = re.sub(r"(\d+ running|\d+ waiting \([\d.]+ GB\))", lambda x: p(x.group(1), "info"), line)
+        return line.replace("⚙ analysis", p("⚙ analysis", "heading", bold=True), 1)
+    if stripped.startswith("⚠"):
+        return p(line, "warn")
+    m = _EVENT.match(line)
+    if m:                                                    # recent processing results
+        indent, stamp, text = m.groups()
+        if "FAILED" in text:
+            return f"{indent}{p(stamp, 'dim')}{p(text, 'error')}"
+        if "error, retrying" in text:
+            return f"{indent}{p(stamp, 'dim')}{p(text, 'warn')}"
+        text, _, problem = text.partition(" ⚠ ")
+        text = re.sub(r"\b([1-9]\d* clip\(s\))", lambda x: p(x.group(1), "title", bold=True), text)
+        return f"{indent}{p(stamp, 'dim')}{text}" + (" " + p("⚠ " + problem, "warn") if problem else "")
+    if stripped.startswith("("):
+        return p(line, "dim")
+    return line

@@ -5,9 +5,9 @@ A small Python script that checks whether a list of streamers is **LIVE**, **OFF
 It is not a website, dashboard or service. It has no database. It calls each platform's official API and prints the results.
 
 ```
-============================================================
-STREAMER LIVE MONITOR
-============================================================
+================================================================
+* STREAMER LIVE MONITOR                                 01:30:15
+================================================================
 
 TWITCH
 [ LIVE ]    streamer_one | 12,450 viewers | Ranked grind
@@ -22,16 +22,12 @@ YOUTUBE
 TIKTOK
 [ UNKNOWN ] streamer_five | API access unavailable (TikTok has no official LIVE status API)
 
-------------------------------------------------------------
-TOTAL: 5
-LIVE: 2
-OFFLINE: 2
-UNKNOWN: 1
-
+----------------------------------------------------------------
+TOTAL: 5 | LIVE: 2 | OFFLINE: 2 | UNKNOWN: 1
 Last checked: 2026-11-20 01:30:15
 ```
 
-Colors: **green** = LIVE, **gray** = OFFLINE, **yellow** = UNKNOWN or API error.
+That is the plain-text version (what you get when output is redirected to a file). In a terminal the report uses a "neon night" palette: **cyan** section headings, a **magenta** title, violet rules and sunset-**orange** warnings. States: **neon green** = LIVE, **slate gray** = OFFLINE, **gold** = UNKNOWN or API error, **pink-red** = errors.
 
 ---
 
@@ -97,7 +93,7 @@ python main.py --interval 30   # continuous monitoring every 30 s (minimum 10)
 ## Continuous mode
 
 - Every cycle clears the screen and redraws the full status list. It ends with
-  `LIVE: x | OFFLINE: y | UNKNOWN: z` and `Next check in N seconds...`.
+  `TOTAL: n | LIVE: x | OFFLINE: y | UNKNOWN: z`, the time of the check and `Next check in N seconds...`.
 - Statuses are kept in memory. A notification is printed only when a confirmed status changes:
 
   ```
@@ -211,7 +207,7 @@ Tools that do report TikTok LIVE status, such as the `TikTokLive` library and pa
 - Requests are batched: 100 logins per call for Twitch, 50 slugs per call for Kick, 50 channels or videos per call for YouTube.
 - Account lookups are cached, and finished YouTube videos are not looked up again.
 - API text such as stream titles is cleaned of control characters before printing.
-- Colors turn off when output is not a terminal, or when `NO_COLOR` is set.
+- Colors match the terminal: 24-bit color when `COLORTERM=truecolor` (iTerm2, VS Code, Ghostty), 256 colors in macOS Terminal and other `*-256color` terminals, otherwise the basic 16. They turn off (plain text, ASCII rules) when output is not a terminal, when `NO_COLOR` is set, or with `TERM=dumb`. `FORCE_COLOR=1` keeps them on when piping, for example into `less -R`. No extra dependencies are used.
 
 ## Troubleshooting
 

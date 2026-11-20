@@ -27,10 +27,12 @@ CLIPS_DIR = ENGINE_DIR / "clips"
 MODEL_DIR = ENGINE_DIR / "model_cache"
 
 RECORDING_SEGMENT_MINUTES = 10
-MAX_CONCURRENT_RECORDINGS = 5
+MAX_CONCURRENT_RECORDINGS = 3       # each live streamer adds one segment to analyse per RECORDING_SEGMENT_MINUTES
 
-# Streamlink quality list, best first. "best" = highest available.
-STREAM_QUALITY = "1080p60,1080p,936p60,900p60,720p60,720p,best"
+# Streamlink quality list, first available wins. 720p keeps analysis and disk use
+# manageable; "best" is the fallback for channels without a 720p rendition.
+# For sharper clips use "1080p60,1080p,936p60,900p60,720p60,720p,best".
+STREAM_QUALITY = "720p60,720p,best"
 STREAMLINK_PATH = "streamlink"
 FFMPEG_PATH = "ffmpeg"
 FFPROBE_PATH = "ffprobe"
@@ -158,9 +160,12 @@ CLIP_PUBLIC_BASE_URL = None
 
 # ---- Processing -------------------------------------------------------------------------------
 
-# Worker processes for analysis; recording is never blocked by analysis. Each
-# live streamer produces one segment per RECORDING_SEGMENT_MINUTES; if the status
-# line says analysis is falling behind, raise this (CPU cores / 3 is a good start).
-ANALYSIS_WORKERS = 2
+# Worker processes for analysis; recording is never blocked by analysis.
+# "auto" = half of the Mac's performance cores (all cores / 4 elsewhere), between 1 and 3:
+# 2 on M1/M2/M3/M4, 3 on Pro/Max chips. Or set a number.
+ANALYSIS_WORKERS = "auto"
+# Analysis runs at lower CPU priority (Unix "nice" 0-19) so the computer stays responsive;
+# recording keeps normal priority. 0 = same priority as everything else.
+ANALYSIS_NICENESS = 10
 PROCESSING_MAX_ATTEMPTS = 3
 PROCESSING_RETRY_DELAY_SECONDS = 60
