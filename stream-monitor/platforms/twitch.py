@@ -47,6 +47,7 @@ class TwitchMonitor(PlatformMonitor):
         self.token = AppAccessToken(self.session, TOKEN_URL, client_id, client_secret, timeout)
         self._last_validated = 0.0
         self._users = {}       # login -> display name, for logins that exist
+        self._user_ids = {}    # login -> Twitch user ID
         self._missing = {}     # login -> time we last found it missing
 
     # ---- API plumbing ---------------------------------------------------------
@@ -117,6 +118,7 @@ class TwitchMonitor(PlatformMonitor):
                 display = user.get("display_name") or login
                 # Show the login too when the display name is in another script.
                 found[login] = display if display.lower() == login else f"{display} ({login})"
+                self._user_ids[login] = str(user.get("id", ""))
             for login in batch:
                 if login in found:
                     self._users[login] = found[login]
@@ -154,10 +156,13 @@ class TwitchMonitor(PlatformMonitor):
                     self.key, name, LIVE, display_name=self._users[login],
                     viewers=stream.get("viewer_count"), title=stream.get("title"),
                     url=url, checked_at=checked_at,
+                    extra={"user_id": str(stream.get("user_id") or self._user_ids.get(login, "")),
+                           "started_at": stream.get("started_at")},
                 ))
             else:
                 results.append(StreamResult(
                     self.key, name, OFFLINE, display_name=self._users[login],
                     url=url, checked_at=checked_at,
+                    extra={"user_id": self._user_ids.get(login, "")},
                 ))
         return results

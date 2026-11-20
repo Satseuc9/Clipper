@@ -87,14 +87,17 @@ class KickMonitor(PlatformMonitor):
 
             stream = channel.get("stream")
             is_live = stream.get("is_live") if isinstance(stream, dict) else None
+            extra = {"broadcaster_user_id": channel.get("broadcaster_user_id")}
             if is_live is True:
+                extra["started_at"] = stream.get("start_time")
                 results.append(StreamResult(
                     self.key, name, LIVE, viewers=stream.get("viewer_count"),
-                    title=channel.get("stream_title"), url=url, checked_at=checked_at,
+                    title=channel.get("stream_title"), url=url, checked_at=checked_at, extra=extra,
                 ))
             elif is_live is False or ("stream" in channel and stream is None):
                 # is_live false, or an explicit null stream: the channel is offline.
-                results.append(StreamResult(self.key, name, OFFLINE, url=url, checked_at=checked_at))
+                results.append(StreamResult(self.key, name, OFFLINE, url=url,
+                                            checked_at=checked_at, extra=extra))
             else:
                 results.append(self.unknown(name, "unexpected response format from Kick"))
         return results

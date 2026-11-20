@@ -30,6 +30,10 @@ class StreamResult:
     url: str | None = None
     error: str | None = None       # why the status is UNKNOWN
     checked_at: float = field(default_factory=time.time)  # when the API confirmed it
+    # Platform IDs other tools can reuse (e.g. the clipping engine):
+    # twitch: user_id, started_at | kick: broadcaster_user_id, started_at
+    # youtube: channel_id, video_id, live_chat_id, started_at
+    extra: dict = field(default_factory=dict)
 
     @property
     def label(self):
