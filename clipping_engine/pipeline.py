@@ -104,15 +104,31 @@ class Pipeline:
 
     def stop(self, wait=False):
         """Stop the queue. Unfinished segments stay "processing" and are re-queued on the next start."""
+        # A second CTRL+C must not interrupt this (it takes well under a second):
+        # an interrupted shutdown would leave Python waiting for busy workers at exit.
+        main = threading.current_thread() is threading.main_thread()
+        previous = signal.signal(signal.SIGINT, signal.SIG_IGN) if main else None
+        try:
+            self._shutdown(wait)
+        finally:
+            if main:
+                signal.signal(signal.SIGINT, previous)
+
+    def _shutdown(self, wait):
         self._stop.set()
         self._wake.set()
         if self._thread:
             self._thread.join(10)
         if self.executor:
             if not wait:
-                for proc in list(getattr(self.executor, "_processes", {}).values()):
+                procs = list(getattr(self.executor, "_processes", {}).values())
+                for proc in procs:
                     proc.terminate()
-            self.executor.shutdown(wait=wait, cancel_futures=True)
+                for proc in procs:
+                    proc.join(5)
+            # Workers are gone (or done), so this returns quickly - and it lets the pool
+            # close its queues before exit (avoids "leaked semaphore" warnings).
+            self.executor.shutdown(wait=True, cancel_futures=True)
             self.executor = None
 
     def drain(self, timeout=None):

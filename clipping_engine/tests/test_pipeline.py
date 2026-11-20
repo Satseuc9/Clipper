@@ -295,3 +295,25 @@ def test_status_line_explains_empty_results():
                      "chat": False}, "notes": ["audio classifier unavailable: ImportError: no module"]})
     assert "audio+video" in text and "no chat" in text and "no speech" in text and "no ai" in text
     assert "audio classifier unavailable" in text
+
+
+def busy_worker(session, index, snapshot):
+    """Simulates a long analysis (Whisper on a 10-minute segment)."""
+    import time
+    time.sleep(120)
+    return {}
+
+
+def test_stop_during_analysis_is_quick_and_resumable(engine):
+    import time
+    from clipping_engine.capture.segment_manager import recover_interrupted
+    session = fake_session(n=2)
+    p = Pipeline(process_fn=busy_worker, use_processes=True, workers=1)
+    p.start()
+    assert wait_for(lambda: statuses(session)[0] == "processing", 60)
+    time.sleep(2)                                          # worker is mid-analysis
+    started = time.monotonic()
+    p.stop()                                               # CTRL+C path
+    assert time.monotonic() - started < 20, "shutdown must not wait for the analysis to finish"
+    assert statuses(session)[0] == "processing"
+    assert recover_interrupted() >= 1 and statuses(session)[0] == "queued", "picked up again on next start"
